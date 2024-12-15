@@ -1,0 +1,267 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import butter, filtfilt
+from sklearn.decomposition import FastICA
+##############################################
+data = pd.read_csv("sample.csv")
+data.head()
+########################################
+# selected the features
+base_channels = ['F7', 'AF3', 'F3', 'F4', 'AF4', 'F8', 'T7', 'T8']
+
+# Ensure the dataset contains a Timestamp column
+if 'Timestamp' not in data.columns:
+    raise ValueError("The dataset does not contain a 'Timestamp' column.")
+
+# Build a list of relevant columns
+relevant_columns = ['Timestamp']  # Start with the timestamp
+for channel in base_channels:
+    relevant_columns.extend(
+        [col for col in data.columns if channel in col]
+    )
+
+# Extract the filtered data
+filtered_data = data[relevant_columns]
+
+# Display the first few rows
+print(filtered_data.head())
+######################################################################
+#saving the extracted data to a csv file 
+filtered_data.to_csv("splitted_channels.csv", index=False)
+splitted_channels=pd.read_csv("splitted_channels.csv")
+#############################################################
+#replaced my null values with the median
+splitted_channels=splitted_channels.fillna(splitted_channels.median())
+#############################################################
+# Assuming the  dataset has a Timestamp column and EEG signal columns
+if 'Timestamp' not in splitted_channels.columns:
+    raise ValueError("The dataset does not contain a 'Timestamp' column.")
+
+# Ensure Timestamp is in datetime format
+splitted_channels['Timestamp'] = pd.to_datetime(splitted_channels['Timestamp'])
+
+# Function to calculate sampling frequency for a single column
+def calculate_sampling_frequency(timestamp_col):
+    time_differences = timestamp_col.diff().dt.total_seconds()  # Calculate time differences
+    average_time_interval = time_differences.dropna().mean()  # Average time interval in seconds
+    return 1 / average_time_interval if average_time_interval else None  # Sampling frequency in Hz
+
+# Create a dictionary to store the sampling frequency for each column
+sampling_frequencies = {}
+
+# Loop through EEG signal columns
+eeg_columns = [col for col in splitted_channels.columns if col.startswith("EEG")]
+for col in eeg_columns:
+    # Calculate sampling frequency for the current column using its timestamps
+    sampling_frequencies[col] = calculate_sampling_frequency(splitted_channels['Timestamp'])
+
+# Display the sampling frequencies
+for col, freq in sampling_frequencies.items():
+    print(f"Sampling Frequency for {col}: {freq:.2f} Hz")
+#################################################################################################
+
+# Define bandpass filter
+def bandpass_filter(signal, lowcut, highcut, fs, order=5):
+    nyquist = 0.5 * fs
+    low = lowcut / nyquist
+    high = highcut / nyquist
+    b, a = butter(order, [low, high], btype='band')
+    return filtfilt(b, a, signal)
+# Ensure Timestamp is in datetime format
+if 'Timestamp' not in splitted_channels.columns:
+    raise ValueError("The dataset does not contain a 'Timestamp' column.")
+
+try:
+    splitted_channels['Timestamp'] = pd.to_datetime(splitted_channels['Timestamp'])
+except Exception as e:
+    raise ValueError(f"Failed to convert 'Timestamp' to datetime. Error: {e}")
+
+
+# Parameters for filtering
+lowcut = 0.5  # Lower bound frequency in Hz
+highcut = 50.0  # Upper bound frequency in Hz
+
+
+# Apply bandpass filter to each signal column
+eeg_columns = [col for col in splitted_channels.columns if col.startswith("EEG")]
+filtered_data = splitted_channels.copy()
+for col in eeg_columns:
+    filtered_data[col] = bandpass_filter(splitted_channels[col].fillna(0), lowcut, highcut, 128)
+    
+# Display the first few rows of the filtered data
+print(filtered_data.head())
+
+##################################################################
+
+# Convert the filtered signals dictionary to a DataFrame for easier plotting
+filtered_signals_df = pd.DataFrame(filtered_data)
+
+# Plot the filtered signals for the first few EEG channels
+plt.figure(figsize=(12, 8))
+
+# Select a subset of channels to plot for clarity
+channels_to_plot = eeg_columns[:8]  # Plot the first 3 EEG channels
+
+for i, col in enumerate(channels_to_plot, 1):
+    plt.subplot(len(channels_to_plot), 1, i)
+    plt.plot(filtered_signals_df[col], label=f'Filtered {col}')
+    plt.title(f'Filtered Signal: {col}')
+    plt.xlabel('Time (samples)')
+    plt.ylabel('Amplitude')
+    plt.legend(loc='upper right')
+
+plt.tight_layout()
+plt.show()
+###############################################################################
+
+# baseline filter
+def baseline_filtering(eeg_data, sampling_frequency=128, lowcut=0.5, highcut=50.0):
+ 
+    filtered_signals = {}
+    for col in eeg_data.columns:
+        # Apply the filter to each channel
+        filtered_signals[col] = bandpass_filter(eeg_data[col], lowcut, highcut, sampling_frequency)
+    return filtered_signals
+
+
+# Extract the Timestamp column
+timestamp = filtered_signals_df['Timestamp']
+
+# Exclude the Timestamp column and apply the baseline filtering to the rest
+eeg_data_numeric = filtered_signals_df.drop(columns=['Timestamp'])
+
+# Apply the baseline filtering on the numeric data
+filtered_signals = baseline_filtering(eeg_data_numeric)
+
+# Reattach the Timestamp column back to the filtered signals
+filtered_signals_df2 = pd.DataFrame(filtered_signals)
+filtered_signals_df2['Timestamp'] = timestamp
+
+# Output the filtered signals for verification
+print(filtered_signals_df2)
+###############################################################################
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.decomposition import FastICA
+
+# Load EEG data: Ensure `filtered_signals_df2` is a DataFrame with EEG signals and a 'Timestamp' column
+# Replace with your actual data loading step
+# Example structure: filtered_signals_df2 = pd.read_csv('your_data.csv')
+
+# Prepare EEG data for ICA
+try:
+    # Exclude 'Timestamp' column for ICA processing
+    eeg_data_numeric = filtered_signals_df2.drop(columns=['Timestamp'])
+    eeg_data = eeg_data_numeric.values  # Convert to NumPy array
+except KeyError:
+    raise KeyError("Ensure 'Timestamp' column exists in filtered_signals_df2")
+
+# Sampling frequency (adjust according to your data)
+fs = 128  # Hz
+
+# Apply ICA
+ica = FastICA(n_components=eeg_data.shape[1], random_state=42, max_iter=1000)
+ica_components = ica.fit_transform(eeg_data)  # Independent components
+mixing_matrix = ica.mixing_  # Mixing matrix
+
+# Reduce the time range for visualization
+max_time = 10  # seconds
+max_samples = int(max_time * fs)
+reduced_ica_components = ica_components[:max_samples, :]
+
+# Plot the independent components
+
+def plot_ica_components(ica_components, fs, max_components=10):
+    """
+    Plots independent components extracted by ICA.
+
+    """
+    t = np.arange(ica_components.shape[0]) / fs
+    num_components = ica_components.shape[1]
+
+    for start in range(0, num_components, max_components):
+        end = min(start + max_components, num_components)
+        plt.figure(figsize=(12, 2 * (end - start)))
+        for i in range(start, end):
+            plt.subplot(end - start, 1, i - start + 1)
+            plt.plot(t, ica_components[:, i])
+            plt.title(f'ICA Component {i + 1}')
+            plt.xlabel('Time (s)')
+            plt.ylabel('Amplitude')
+        plt.tight_layout()
+        plt.show()
+
+plot_ica_components(reduced_ica_components, fs)
+
+# Reconstruct EEG signals after removing artifact components
+
+def reconstruct_eeg(ica_components, mixing_matrix, components_to_remove=None):
+    """
+    Reconstruct EEG signals after removing selected ICA components.
+
+    Parameters:
+    ica_components: numpy.ndarray
+        Independent components extracted by ICA
+    mixing_matrix: numpy.ndarray
+        Mixing matrix estimated by ICA
+    components_to_remove: list, optional
+        List of indices of components to remove
+
+    Returns:
+    reconstructed_eeg: numpy.ndarray
+        Reconstructed EEG signals
+    """
+    if components_to_remove:
+        ica_components[:, components_to_remove] = 0  # Zero-out unwanted components
+    return np.dot(ica_components, mixing_matrix.T)
+
+# Example: Remove components 0 and 1
+components_to_remove = [0, 1]  # Adjust based on your analysis
+reconstructed_eeg = reconstruct_eeg(ica_components, mixing_matrix, components_to_remove)
+
+# Plot reconstructed signals
+
+def plot_reconstructed_signals(original, reconstructed, fs, ch_names, max_time=10):
+    """
+    Compare original and reconstructed EEG signals.
+
+    Parameters:
+    original: numpy.ndarray
+        Original EEG signals
+    reconstructed: numpy.ndarray
+        Reconstructed EEG signals
+    fs: int
+        Sampling frequency
+    ch_names: list
+        EEG channel names
+    max_time: float
+        Time range to display (seconds)
+    """
+    t = np.arange(min(original.shape[0], reconstructed.shape[0])) / fs
+    num_channels = original.shape[1]
+
+    plt.figure(figsize=(12, 2 * num_channels))
+    for i in range(num_channels):
+        plt.subplot(num_channels, 1, i + 1)
+        plt.plot(t, original[:len(t), i], label='Original')
+        plt.plot(t, reconstructed[:len(t), i], label='Reconstructed', alpha=0.7)
+        plt.title(f'Channel {ch_names[i]}')
+        plt.xlabel('Time (s)')
+        plt.ylabel('Amplitude')
+        plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+# Channel names (adjust to match your data)
+channel_names = eeg_data_numeric.columns.tolist()
+plot_reconstructed_signals(eeg_data, reconstructed_eeg, fs, channel_names)
+
+# Save ICA components to DataFrame for further analysis
+ica_df = pd.DataFrame(ica_components, columns=[f'ICA_Component_{i + 1}' for i in range(ica_components.shape[1])])
+ica_df['Timestamp'] = filtered_signals_df2['Timestamp']
+print(ica_df.head())
+
+
+
